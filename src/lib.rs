@@ -173,7 +173,7 @@ fn main() -> std::io::Result<()> {
 
 # if false {
     let private_thread = thread::spawn(move || {
-        let mut sys = System::new("private");
+        let mut sys = System::new();
         let srv = HttpServer::new(move || {
             App::new()
                 .wrap(private_metrics.clone())
@@ -186,7 +186,7 @@ fn main() -> std::io::Result<()> {
     });
 
     let public_thread = thread::spawn(|| {
-        let mut sys = System::new("public");
+        let mut sys = System::new();
         let srv = HttpServer::new(move || {
             App::new()
                 .wrap(public_metrics.clone())
@@ -448,11 +448,10 @@ impl PrometheusMetrics {
     }
 }
 
-impl<S> Transform<S> for PrometheusMetrics
+impl<S> Transform<S, ServiceRequest> for PrometheusMetrics
 where
-    S: Service<Request = ServiceRequest, Response = ServiceResponse, Error = Error>,
+    S: Service<ServiceRequest, Response = ServiceResponse, Error = Error>,
 {
-    type Request = ServiceRequest;
     type Response = ServiceResponse;
     type Error = Error;
     type InitError = ();
@@ -471,7 +470,7 @@ where
 #[pin_project::pin_project]
 pub struct LoggerResponse<S>
 where
-    S: Service,
+    S: Service<ServiceRequest>,
 {
     #[pin]
     fut: S::Future,
@@ -482,7 +481,7 @@ where
 
 impl<S> Future for LoggerResponse<S>
 where
-    S: Service<Request = ServiceRequest, Response = ServiceResponse, Error = Error>,
+    S: Service<ServiceRequest, Response = ServiceResponse, Error = Error>,
 {
     type Output = Result<ServiceResponse, Error>;
 
@@ -536,20 +535,19 @@ pub struct PrometheusMetricsMiddleware<S> {
     inner: Arc<PrometheusMetrics>,
 }
 
-impl<S> Service for PrometheusMetricsMiddleware<S>
+impl<S> Service<ServiceRequest> for PrometheusMetricsMiddleware<S>
 where
-    S: Service<Request = ServiceRequest, Response = ServiceResponse, Error = Error>,
+    S: Service<ServiceRequest, Response = ServiceResponse, Error = Error>,
 {
-    type Request = ServiceRequest;
     type Response = ServiceResponse;
     type Error = S::Error;
     type Future = LoggerResponse<S>;
 
-    fn poll_ready(&mut self, ct: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, ct: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(ct)
     }
 
-    fn call(&mut self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, req: ServiceRequest) -> Self::Future {
         LoggerResponse {
             fut: self.service.call(req),
             time: Instant::now(),
