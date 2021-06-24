@@ -209,16 +209,16 @@ fn main() -> std::io::Result<()> {
 */
 #![deny(missing_docs)]
 
+use pin_project::{pin_project, pinned_drop};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
 use actix_web::{
-    dev::{
-        Body, BodySize, MessageBody, ResponseBody, Service, ServiceRequest, ServiceResponse,
-        Transform,
-    },
+    body::AnyBody,
+    dev::{BodySize, MessageBody, Service, ServiceRequest, ServiceResponse, Transform},
     http::{header::CONTENT_TYPE, HeaderValue, Method, StatusCode},
     web::Bytes,
     Error,
@@ -513,9 +513,10 @@ where
                     CONTENT_TYPE,
                     HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
                 );
-                body = ResponseBody::Other(Body::from_message(inner.metrics()));
+                body = AnyBody::from(inner.metrics());
             }
-            ResponseBody::Other(Body::from_message(StreamLog {
+
+            AnyBody::from_message(StreamLog {
                 body,
                 size: 0,
                 clock: time,
@@ -523,7 +524,7 @@ where
                 status: head.status,
                 path: pattern_or_path,
                 method,
-            }))
+            })
         })))
     }
 }
@@ -557,14 +558,11 @@ where
     }
 }
 
-use pin_project::{pin_project, pinned_drop};
-use std::marker::PhantomData;
-
 #[doc(hidden)]
 #[pin_project(PinnedDrop)]
-pub struct StreamLog<B> {
+pub struct StreamLog {
     #[pin]
-    body: ResponseBody<B>,
+    body: AnyBody,
     size: usize,
     clock: Instant,
     inner: Arc<PrometheusMetrics>,
@@ -574,7 +572,7 @@ pub struct StreamLog<B> {
 }
 
 #[pinned_drop]
-impl<B> PinnedDrop for StreamLog<B> {
+impl PinnedDrop for StreamLog {
     fn drop(self: Pin<&mut Self>) {
         // update the metrics for this request at the very end of responding
         self.inner
@@ -582,14 +580,20 @@ impl<B> PinnedDrop for StreamLog<B> {
     }
 }
 
-impl<B: MessageBody> MessageBody for StreamLog<B> {
+impl MessageBody for StreamLog {
+    // Sadly, this error is not accessible thourg actix_web
+    type Error = actix_http::error::Error;
+
     fn size(&self) -> BodySize {
         self.body.size()
     }
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Bytes, Self::Error>>> {
         let this = self.project();
-        match MessageBody::poll_next(this.body, cx) {
+        match this.body.poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
                 *this.size += chunk.len();
                 Poll::Ready(Some(Ok(chunk)))
